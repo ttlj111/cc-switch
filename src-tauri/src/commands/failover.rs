@@ -2,11 +2,12 @@
 //!
 //! 管理代理模式下的故障转移队列（基于 providers 表的 in_failover_queue 字段）
 
+use tauri::Manager;
+
 use crate::database::FailoverQueueItem;
 use crate::provider::Provider;
 use crate::store::AppState;
 use std::str::FromStr;
-use tauri::Emitter;
 
 fn require_failover_app(app_type: &str) -> Result<(), String> {
     let app = crate::app_config::AppType::from_str(app_type)
@@ -298,7 +299,7 @@ pub async fn set_auto_failover_enabled(
             "providerId": p1_provider_id,
             "source": "failoverEnabled"
         });
-        let _ = app.emit("provider-switched", event_data);
+        let _ = app.emit_all("provider-switched", event_data);
     }
 
     // 刷新托盘，确保状态同步（Linux 重建原生菜单，其它平台通知托盘面板，不挂原生菜单）

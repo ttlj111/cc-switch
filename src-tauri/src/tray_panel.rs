@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, WindowUrl, Window, WindowBuilder};
 
 use crate::store::AppState;
 
@@ -310,15 +310,20 @@ fn place(
 
 /// 找出点（物理像素）所在的显示器，返回它的工作区（逻辑像素）和缩放。
 fn monitor_at(app: &AppHandle, px: f64, py: f64) -> Option<(Area, f64)> {
-    let monitors = app.available_monitors().ok()?;
+    // v1: available_monitors() and primary_monitor() are Window methods, not AppHandle.
+    // Use a reference window (main) to get monitors.
+    let main_window = app.get_window("main")?;
+    let monitors = main_window.available_monitors().ok()?;
     let to_area = |m: &tauri::Monitor| {
         let scale = m.scale_factor();
-        let work = m.work_area();
+        let pos = m.position();
+        let sz = m.size();
+        // v1 Monitor has no work_area(); approximate using size/position
         let area = Area {
-            left: work.position.x as f64 / scale,
-            top: work.position.y as f64 / scale,
-            right: (work.position.x as f64 + work.size.width as f64) / scale,
-            bottom: (work.position.y as f64 + work.size.height as f64) / scale,
+            left: pos.x as f64 / scale,
+            top: pos.y as f64 / scale,
+            right: (pos.x as f64 + sz.width as f64) / scale,
+            bottom: (pos.y as f64 + sz.height as f64) / scale,
         };
         (area, scale)
     };
@@ -333,16 +338,16 @@ fn monitor_at(app: &AppHandle, px: f64, py: f64) -> Option<(Area, f64)> {
         })
         .or_else(|| monitors.first())
         .map(to_area)
-        .or_else(|| app.primary_monitor().ok().flatten().as_ref().map(to_area))
+        .or_else(|| main_window.primary_monitor().ok().flatten().as_ref().map(to_area))
 }
 
 // ─── 窗口 ────────────────────────────────────────────────────────────────────
 
-fn panel_window(app: &AppHandle) -> Option<WebviewWindow> {
-    app.get_webview_window(PANEL_LABEL)
+fn panel_window(app: &AppHandle) -> Option<Window> {
+    app.get_window(PANEL_LABEL)
 }
 
-fn ensure_window(app: &AppHandle) -> Option<WebviewWindow> {
+fn ensure_window(app: &AppHandle) -> Option<Window> {
     if let Some(window) = panel_window(app) {
         return Some(window);
     }
@@ -355,11 +360,11 @@ fn ensure_window(app: &AppHandle) -> Option<WebviewWindow> {
     }
 }
 
-fn create_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+fn create_window(app: &AppHandle) -> tauri::Result<Window> {
     // 新窗口还没套过深浅色（轻量模式下面板收起即销毁，会反复新建）。
     *lock(&APPLIED_DARK) = None;
     let window =
-        WebviewWindowBuilder::new(app, PANEL_LABEL, WebviewUrl::App("tray-panel.html".into()))
+        WindowBuilder::new(app, PANEL_LABEL, WindowUrl::App("tray-panel.html".into()))
             .title("CC Switch")
             .inner_size(MAIN_WIDTH, 420.0)
             .resizable(false)
@@ -367,11 +372,8 @@ fn create_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
             .minimizable(false)
             .decorations(false)
             .transparent(true)
-            // Windows 使用固定透明画布，整窗系统阴影会暴露画布的外框。
-            .shadow(!cfg!(target_os = "windows"))
             .always_on_top(true)
             .skip_taskbar(true)
-            .visible_on_all_workspaces(true)
             .visible(false)
             .focused(false)
             .build()?;
@@ -392,12 +394,12 @@ fn create_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     Ok(window)
 }
 
-fn hide_window(window: &WebviewWindow) {
+fn hide_window(window: &Window) {
     PENDING_REVEAL.store(false, Ordering::Release);
     let _ = window.hide();
     // 面板里已经显示过反馈行了，下次弹出不再显示。
     crate::tray::mark_feedback_seen();
-    release_if_lightweight(window.app_handle());
+    release_if_lightweight(&window.app_handle());
 }
 
 /// 轻量模式要释放全部 WebView（Windows 上只要还剩一个，WebView2 进程就都留着）：
@@ -420,8 +422,8 @@ pub fn release_if_lightweight(app: &AppHandle) {
             {
                 return;
             }
-            if let Err(e) = window.destroy() {
-                log::warn!("[TrayPanel] 轻量模式下销毁面板窗口失败: {e}");
+            if let Err(e) = window.close() {
+                log::warn!("[TrayPanel] 轻量模式下关闭面板窗口失败: {e}");
             }
         });
     });
@@ -433,7 +435,7 @@ pub fn hide_panel(app: &AppHandle) {
     }
 }
 
-fn reveal(window: &WebviewWindow) {
+fn reveal(window: &Window) {
     if !PENDING_REVEAL.swap(false, Ordering::AcqRel) {
         return;
     }
@@ -442,7 +444,7 @@ fn reveal(window: &WebviewWindow) {
 }
 
 /// 在 `icon`（物理像素的图标矩形）旁弹出面板。
-fn show_at(app: &AppHandle, window: &WebviewWindow, icon: (f64, f64, f64, f64)) {
+fn show_at(app: &AppHandle, window: &Window, icon: (f64, f64, f64, f64)) {
     let (px, py, pw, ph) = icon;
     let Some((work, scale)) = monitor_at(app, px + pw / 2.0, py + ph / 2.0) else {
         log::warn!("[TrayPanel] 找不到图标所在的显示器");
@@ -488,8 +490,17 @@ fn show_at(app: &AppHandle, window: &WebviewWindow, icon: (f64, f64, f64, f64)) 
     });
 }
 
+/// v1 has no tauri::Rect. Define a simple struct for tray icon rect.
+#[derive(Debug, Clone)]
+pub struct TrayRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
 /// 点托盘图标：开着就关，关着就在图标旁弹出。`rect` 是点击事件带的图标矩形。
-pub fn toggle(app: &AppHandle, rect: &tauri::Rect) {
+pub fn toggle(app: &AppHandle, rect: &TrayRect) {
     if let Some(window) = panel_window(app) {
         if window.is_visible().unwrap_or(false) {
             hide_window(&window);
@@ -507,20 +518,21 @@ pub fn toggle(app: &AppHandle, rect: &tauri::Rect) {
         return;
     };
     // 托盘矩形本来就是物理像素；万一是逻辑的，按 1 倍算也只是位置略偏。
-    let pos = rect.position.to_physical::<f64>(1.0);
-    let size = rect.size.to_physical::<f64>(1.0);
-    show_at(app, &window, (pos.x, pos.y, size.width, size.height));
+    show_at(app, &window, (rect.x, rect.y, rect.width, rect.height));
 }
 
 /// Linux 原生菜单里的「打开快捷面板」：没有图标位置，弹在鼠标旁边
 /// （Wayland 下窗口位置由合成器决定）。
+/// v1 has no cursor_position() on AppHandle; fall back to screen center.
 pub fn show_at_cursor(app: &AppHandle) {
     let Some(window) = ensure_window(app) else {
         return;
     };
+    // v1 has no app.cursor_position(); try to get position from main window monitor
     let (x, y) = app
-        .cursor_position()
-        .map(|p| (p.x, p.y))
+        .get_window("main")
+        .and_then(|w| w.outer_position().ok())
+        .map(|p| (p.x as f64, p.y as f64))
         .unwrap_or((0.0, 0.0));
     show_at(app, &window, (x, y, 1.0, 1.0));
 }
@@ -603,7 +615,7 @@ mod platform {
         NSWindowOrderingMode,
     };
     use objc2_foundation_03::{NSPoint, NSRect, NSSize};
-    use tauri::WebviewWindow;
+    use tauri::Window;
 
     use super::{style, CardRect, Frame};
 
@@ -618,13 +630,13 @@ mod platform {
 
     /// 不用系统窗口阴影：透明窗口的阴影按两块卡片的形状算，向下偏移、连成一片，
     /// macOS 26 上还会描一圈深色边。阴影由网页给每块卡片画（窗口四周留了边距）。
-    pub fn init(window: &WebviewWindow) {
+    pub fn init(window: &Window) {
         let _ = window.set_shadow(false);
         // 轻量模式下面板会销毁重建：旧窗口的玻璃挂在已销毁的视图上，丢掉，按新窗口重新垫。
         let _ = window.run_on_main_thread(|| GLASS.with(|glass| glass.borrow_mut().clear()));
     }
 
-    fn ns_window(window: &WebviewWindow) -> Option<&NSWindow> {
+    fn ns_window(window: &Window) -> Option<&NSWindow> {
         let ptr = window.ns_window().ok()?;
         // SAFETY: 指针来自 tao，窗口存活期间有效；只在主线程上借用，不持有。
         Some(unsafe { &*ptr.cast::<NSWindow>() })
@@ -665,7 +677,7 @@ mod platform {
     }
 
     /// 摆好窗口（`frame` 为空 = 窗口不动）和每块玻璃，在同一个主线程回合里做完。
-    pub fn apply(window: &WebviewWindow, frame: Option<Frame>, _scale: f64, cards: Vec<CardRect>) {
+    pub fn apply(window: &Window, frame: Option<Frame>, _scale: f64, cards: Vec<CardRect>) {
         let target = window.clone();
         let _ = window.run_on_main_thread(move || {
             let Some(mtm) = MainThreadMarker::new() else {
@@ -737,7 +749,7 @@ mod platform {
     }
 
     /// 只改面板窗口的深浅色（`set_theme` 在 macOS 上改的是整个应用）；`None` 跟随系统。
-    pub fn set_dark(window: &WebviewWindow, dark: Option<bool>) {
+    pub fn set_dark(window: &Window, dark: Option<bool>) {
         let target = window.clone();
         let _ = window.run_on_main_thread(move || {
             let Some(ns_window) = ns_window(&target) else {
@@ -761,7 +773,7 @@ mod platform {
 
 #[cfg(target_os = "windows")]
 mod platform {
-    use tauri::WebviewWindow;
+    use tauri::Window;
     use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
     use windows_sys::Win32::Graphics::Gdi::{
         ClientToScreen, CreateRoundRectRgn, DeleteObject, SetWindowRgn,
@@ -779,7 +791,7 @@ mod platform {
         style::GLASS
     }
 
-    pub fn init(_window: &WebviewWindow) {}
+    pub fn init(_window: &Window) {}
 
     /// 前端回报的是客户区尺寸；带阴影的无边框窗口仍有非客户区，需补回四边，
     /// 否则 WebView 的右侧和底部会被裁切。坐标也按客户区原点换算，保持卡片贴住图标。
@@ -882,7 +894,7 @@ mod platform {
     }
 
     /// 首次弹出时一次设好位置和客户区大小，之后只更新卡片的原生可见区域。
-    pub fn apply(window: &WebviewWindow, frame: Option<Frame>, scale: f64, cards: Vec<CardRect>) {
+    pub fn apply(window: &Window, frame: Option<Frame>, scale: f64, cards: Vec<CardRect>) {
         let target = window.clone();
         let _ = window.run_on_main_thread(move || {
             let Ok(hwnd) = target.hwnd() else {
@@ -906,7 +918,7 @@ mod platform {
         });
     }
 
-    pub fn set_dark(window: &WebviewWindow, dark: Option<bool>) {
+    pub fn set_dark(window: &Window, dark: Option<bool>) {
         let _ = window.set_theme(dark.map(|dark| {
             if dark {
                 tauri::Theme::Dark
@@ -1047,7 +1059,7 @@ mod platform {
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 mod platform {
-    use tauri::{PhysicalPosition, PhysicalSize, WebviewWindow};
+    use tauri::{PhysicalPosition, PhysicalSize, Window};
 
     use super::{style, CardRect, Frame};
 
@@ -1055,9 +1067,9 @@ mod platform {
         style::GLASS
     }
 
-    pub fn init(_window: &WebviewWindow) {}
+    pub fn init(_window: &Window) {}
 
-    pub fn apply(window: &WebviewWindow, frame: Option<Frame>, scale: f64, _cards: Vec<CardRect>) {
+    pub fn apply(window: &Window, frame: Option<Frame>, scale: f64, _cards: Vec<CardRect>) {
         let Some(frame) = frame else {
             return;
         };
@@ -1072,7 +1084,7 @@ mod platform {
     }
 
     /// GTK 的主题是整个应用的，面板只靠网页自己的配色。
-    pub fn set_dark(_window: &WebviewWindow, _dark: Option<bool>) {}
+    pub fn set_dark(_window: &Window, _dark: Option<bool>) {}
 }
 
 // ─── 命令 ──────────────────────────────────────────────────────────────────────
@@ -1179,7 +1191,7 @@ pub fn tray_panel_hide(app: AppHandle) {
 /// （看得到勾移到哪家），其余（打开页面、退出）先收起面板。
 ///
 /// 必须是 async 命令：轻量模式下打开主窗口要新建窗口，Windows 上在同步命令里
-/// `WebviewWindowBuilder::build()` 会死锁（WebView2 限制）。原生菜单的事件回调没有这个问题。
+/// `WindowBuilder::build()` 会死锁（WebView2 限制）。原生菜单的事件回调没有这个问题。
 #[tauri::command]
 pub async fn tray_panel_action(app: AppHandle, id: String) {
     let stays_open =

@@ -7,7 +7,7 @@ static LIGHTWEIGHT_MODE: AtomicBool = AtomicBool::new(false);
 pub fn enter_lightweight_mode(app: &tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        if let Some(window) = app.get_webview_window("main") {
+        if let Some(window) = app.get_window("main") {
             let _ = window.set_skip_taskbar(true);
         }
     }
@@ -16,10 +16,10 @@ pub fn enter_lightweight_mode(app: &tauri::AppHandle) -> Result<(), String> {
         crate::tray::apply_tray_policy(app, false);
     }
 
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_window("main") {
         crate::save_window_state_before_exit(app);
         window
-            .destroy()
+            .close()
             .map_err(|e| format!("销毁主窗口失败: {e}"))?;
     }
     // else: already in lightweight mode or window not found, just set the flag
@@ -34,9 +34,9 @@ pub fn enter_lightweight_mode(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 pub fn exit_lightweight_mode(app: &tauri::AppHandle) -> Result<(), String> {
-    use tauri::WebviewWindowBuilder;
+    use tauri::WindowBuilder;
 
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
@@ -59,20 +59,19 @@ pub fn exit_lightweight_mode(app: &tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    let window_config = app
-        .config()
-        .app
+    let config = app.config();
+    let window_config = config
+        .tauri
         .windows
         .iter()
         .find(|w| w.label == "main")
         .ok_or("主窗口配置未找到")?;
 
-    WebviewWindowBuilder::from_config(app, window_config)
-        .map_err(|e| format!("加载主窗口配置失败: {e}"))?
+    let _window = WindowBuilder::from_config(app, window_config.clone())
         .build()
         .map_err(|e| format!("创建主窗口失败: {e}"))?;
 
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
@@ -84,7 +83,7 @@ pub fn exit_lightweight_mode(app: &tauri::AppHandle) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        if let Some(window) = app.get_webview_window("main") {
+        if let Some(window) = app.get_window("main") {
             let _ = window.set_skip_taskbar(false);
         }
     }

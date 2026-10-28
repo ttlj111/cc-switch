@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/tauri";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppId } from "@/lib/api/types";
 import { APP_IDS } from "@/config/appConfig";

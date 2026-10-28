@@ -1,4 +1,5 @@
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/tauri";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ContentRef,
   ImageRef,
@@ -55,13 +56,27 @@ export const sessionsApi = {
     sourcePath: string,
     onChunk: (chunk: TranscriptChunk) => void,
   ): Promise<void> {
-    const channel = new Channel<TranscriptChunk>();
-    channel.onmessage = onChunk;
-    await invoke("stream_session_messages", {
-      providerId,
-      sourcePath,
-      onChunk: channel,
-    });
+    // Tauri v1 没有 Channel，改用事件系统：后端通过 `session-stream-chunk` 事件推送数据。
+    // 每个事件 payload 包含 { requestId, chunk }，requestId 用于区分并发请求。
+    const requestId = `${providerId}:${sourcePath}:${Date.now()}`;
+    let unlisten: UnlistenFn | undefined;
+    try {
+      unlisten = await listen<{ requestId: string; chunk: TranscriptChunk }>(
+        "session-stream-chunk",
+        (event) => {
+          if (event.payload.requestId === requestId) {
+            onChunk(event.payload.chunk);
+          }
+        },
+      );
+      await invoke("stream_session_messages", {
+        providerId,
+        sourcePath,
+        requestId,
+      });
+    } finally {
+      unlisten?.();
+    }
   },
 
   /** 按 ContentRef 取全文（引用原样回传，前端不解析）；按字符分页，每页最多 512K 字符 */

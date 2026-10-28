@@ -12,8 +12,8 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use tauri::menu::{ContextMenu, Menu};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
+use tauri::api::menu::{ContextMenu, Menu};
+use tauri::api::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::{AppHandle, PhysicalPosition, PhysicalSize, Rect, Wry};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, S_OK, WPARAM};
 use windows_sys::Win32::UI::Shell::{
@@ -48,7 +48,7 @@ pub fn remember_native_menu(menu: &Menu<Wry>) {
 
 /// 托盘建好后调用一次（主线程）。
 pub fn install(app: &AppHandle) {
-    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+    let Some(tray) = app.tray_handle(TRAY_ID) else {
         return;
     };
     let hwnd = match tray.with_inner_tray_icon(|t| t.window_handle() as isize) {
@@ -140,7 +140,7 @@ fn post_click(hwnd: HWND, button: MouseButton) {
 }
 
 fn click(app: &AppHandle, hwnd: isize, button: MouseButton, x: i32, y: i32) {
-    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+    let Some(tray) = app.tray_handle(TRAY_ID) else {
         return;
     };
     // 拿不到图标矩形：把光标处当成图标，面板弹在光标旁边。

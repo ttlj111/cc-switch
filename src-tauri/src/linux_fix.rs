@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use tauri::{LogicalSize, PhysicalSize, WebviewWindow};
+use tauri::{LogicalSize, PhysicalSize, Window};
 
 static IS_NUDGING: AtomicBool = AtomicBool::new(false);
 
@@ -54,7 +54,7 @@ const RESIZE_GAP: Duration = Duration::from_millis(100);
 const RECONCILE_WAIT: Duration = Duration::from_millis(500);
 
 struct PendingNudge {
-    window: WebviewWindow,
+    window: Window,
     reason: &'static str,
 }
 
@@ -117,11 +117,11 @@ fn decorations_need_restore(current: bool, desired: bool) -> bool {
     current != desired
 }
 
-fn is_window_alive(window: &WebviewWindow) -> bool {
+fn is_window_alive(window: &Window) -> bool {
     window.is_visible().is_ok()
 }
 
-fn is_window_visible(window: &WebviewWindow) -> bool {
+fn is_window_visible(window: &Window) -> bool {
     window.is_visible().unwrap_or(false)
 }
 
@@ -151,7 +151,7 @@ impl Drop for NudgeGuard {
 ///
 /// 同一时刻只跑一条序列。后续请求覆盖排队，当前序列（含任何已发出的
 /// bump→restore）结束后再对最新窗口跑一遍。
-pub(crate) fn nudge_main_window(window: WebviewWindow, reason: &'static str) {
+pub(crate) fn nudge_main_window(window: Window, reason: &'static str) {
     let _ = window.set_focus();
     PENDING_NUDGE.store(PendingNudge { window, reason });
 
@@ -191,7 +191,7 @@ pub(crate) fn nudge_main_window(window: WebviewWindow, reason: &'static str) {
 }
 
 async fn run_nudge_sequence(
-    window: WebviewWindow,
+    window: Window,
     reason: &'static str,
     allow_delayed_focus: bool,
 ) -> bool {
@@ -245,7 +245,7 @@ async fn run_nudge_sequence(
     }
 }
 
-fn restore_decorations_if_needed(window: &WebviewWindow) {
+fn restore_decorations_if_needed(window: &Window) {
     let desired = !crate::settings::get_settings().use_app_window_controls;
     match window.is_decorated() {
         Ok(current) if decorations_need_restore(current, desired) => {
@@ -273,7 +273,7 @@ fn restore_decorations_if_needed(window: &WebviewWindow) {
 ///
 /// 必须在 GTK 主线程改 widget。`run_on_main_thread` + `gtk_window()` 在主线程
 /// 上会走 wry 的 inline `handle_user_message`，不会自己等自己。
-fn patch_wayland_header_event_box(window: &WebviewWindow) {
+fn patch_wayland_header_event_box(window: &Window) {
     let window = window.clone();
     if let Err(e) = window.clone().run_on_main_thread(move || {
         apply_wayland_header_event_box_patch(&window);
@@ -282,7 +282,7 @@ fn patch_wayland_header_event_box(window: &WebviewWindow) {
     }
 }
 
-fn apply_wayland_header_event_box_patch(window: &WebviewWindow) {
+fn apply_wayland_header_event_box_patch(window: &Window) {
     use gtk::prelude::{Cast, EventBoxExt, GtkWindowExt};
 
     let gtk_window = match window.gtk_window() {
@@ -309,7 +309,7 @@ fn apply_wayland_header_event_box_patch(window: &WebviewWindow) {
 ///
 /// 一旦 `set_size(bumped)` 已经发出，本函数保证随后 `set_size(original)`，
 /// 即使窗口在 RESIZE_GAP 期间被隐藏。这是刻意不做 generation-cancel 的原因。
-async fn pseudo_resize_logical(window: &WebviewWindow) {
+async fn pseudo_resize_logical(window: &Window) {
     let (physical, scale) = match (window.inner_size(), window.scale_factor()) {
         (Ok(physical), Ok(scale)) => (physical, scale),
         (Err(e), _) => {

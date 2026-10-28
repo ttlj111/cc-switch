@@ -1,5 +1,5 @@
 import { markdownLanguage } from "@codemirror/lang-markdown";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/tauri";
 import { ArrowUpRight } from "lucide-react";
 import {
   createContext,

@@ -23,25 +23,25 @@ export async function getCurrentVersion(): Promise<string> {
 }
 
 export async function checkForUpdate(
-  opts: CheckOptions = {},
+  _opts: CheckOptions = {},
 ): Promise<
   { status: "up-to-date" } | { status: "available"; info: UpdateInfo }
 > {
-  // 动态引入，避免在未安装插件时导致打包期问题
-  const { check } = await import("@tauri-apps/plugin-updater");
+  // Tauri v1: 使用 checkUpdate() 而非 check()
+  const { checkUpdate } = await import("@tauri-apps/api/updater");
 
   const currentVersion = await getCurrentVersion();
-  const update = await check({ timeout: opts.timeout ?? 30000 } as any);
+  const update = await checkUpdate();
 
-  if (!update) {
+  if (!update.shouldUpdate) {
     return { status: "up-to-date" };
   }
 
   const info: UpdateInfo = {
     currentVersion,
-    availableVersion: (update as any).version ?? "",
-    notes: (update as any).notes,
-    pubDate: (update as any).date,
+    availableVersion: update.manifest?.version ?? "",
+    notes: update.manifest?.body,
+    pubDate: update.manifest?.date,
   };
 
   return { status: "available", info };

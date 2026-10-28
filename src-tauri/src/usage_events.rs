@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Manager};
 
 /// 前端监听的事件名
 pub const EVENT_USAGE_LOG_RECORDED: &str = "usage-log-recorded";
@@ -64,7 +64,7 @@ pub fn notify_log_recorded() {
         // 下一轮防抖窗口会重新调度，不会丢失。
         EMIT_SCHEDULED.store(false, Ordering::Release);
 
-        if let Err(e) = handle.emit(EVENT_USAGE_LOG_RECORDED, ()) {
+        if let Err(e) = handle.emit_all(EVENT_USAGE_LOG_RECORDED, ()) {
             log::warn!("emit {EVENT_USAGE_LOG_RECORDED} 失败: {e}");
         }
     });

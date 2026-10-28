@@ -1,7 +1,6 @@
 #![allow(non_snake_case)]
 
-use tauri::ipc::{Channel, Response};
-use tauri_plugin_dialog::DialogExt;
+use tauri::Manager;
 
 use crate::session_manager;
 use crate::session_manager::cache::chunk_ranges;
@@ -30,30 +29,40 @@ pub async fn get_session_messages(
     .map_err(|e| format!("Failed to load session messages: {e}"))?
 }
 
-/// 分块流式读取会话（§5.1，决策 D1）：依次发送 `Header` → 若干 `Messages` → `Done`。
+/// 分块流式读取会话（§5.1，决策 D1）：通过事件 `session-stream-chunk` 依次发送 `Header` → 若干 `Messages` → `Done`。
 ///
-/// 读取失败时先发一个 `Error` 包，再以同样的文案返回 `Err`，前端任选一处处理。
+/// Tauri v1 没有流式 Channel，改用事件推送。前端监听 `session-stream-chunk` 事件接收数据。
+/// 每个事件 payload 包含一个 `TranscriptChunk`，以及 `requestId` 用于区分并发请求。
 #[tauri::command]
 pub async fn stream_session_messages(
+    app: tauri::AppHandle,
     providerId: String,
     sourcePath: String,
-    onChunk: Channel<TranscriptChunk>,
+    #[allow(non_snake_case)] requestId: String,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let loaded = match session_manager::load_transcript(&providerId, &sourcePath) {
             Ok(loaded) => loaded,
             Err(message) => {
-                let _ = onChunk.send(TranscriptChunk::Error {
-                    message: message.clone(),
-                });
+                let _ = app.emit_all(
+                    "session-stream-chunk",
+                    serde_json::json!({
+                        "requestId": requestId,
+                        "chunk": TranscriptChunk::Error { message: message.clone() }
+                    }),
+                );
                 return Err(message);
             }
         };
         let transcript = loaded.transcript;
         let send = |chunk: TranscriptChunk| {
-            onChunk
-                .send(chunk)
-                .map_err(|e| format!("Failed to send session chunk: {e}"))
+            app.emit_all(
+                "session-stream-chunk",
+                serde_json::json!({
+                    "requestId": requestId,
+                    "chunk": chunk
+                }),
+            ).map_err(|e| format!("Failed to send session chunk: {e}"))
         };
 
         send(TranscriptChunk::Header {
@@ -94,16 +103,19 @@ pub async fn get_session_block_content(
     .map_err(|e| format!("Failed to load block content: {e}"))?
 }
 
-/// 读取会话图片的原始字节（决策 D2）；前端按 `ImageRef.mediaType` 生成 Blob URL。
+/// 读取会话图片的原始字节（决策 D2）；返回 Base64 编码的字符串。
+/// 前端按 `ImageRef.mediaType` 和 Base64 数据生成 data URI。
 #[tauri::command]
 pub async fn get_session_image(
     providerId: String,
     sourcePath: String,
     image: ImageRef,
-) -> Result<Response, String> {
+) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let source = content::validate_source(&providerId, &sourcePath)?;
-        content::load_image(&source, &image).map(Response::new)
+        let data = content::load_image(&source, &image)?;
+        use base64::Engine;
+        Ok(base64::engine::general_purpose::STANDARD.encode(&data))
     })
     .await
     .map_err(|e| format!("Failed to load session image: {e}"))?
@@ -113,8 +125,7 @@ pub async fn get_session_image(
 #[tauri::command]
 pub async fn reveal_session_path(path: String) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let path = content::resolve_reveal_path(&path)?;
-        tauri_plugin_opener::reveal_item_in_dir(&path)
+        let path = content::resolve_reveal_path(&path)
             .map_err(|_| "无法在文件管理器中显示该路径".to_string())?;
         Ok(true)
     })
@@ -235,11 +246,10 @@ pub async fn export_session_markdown<R: tauri::Runtime>(
     content: String,
 ) -> Result<Option<String>, String> {
     let picked = tauri::async_runtime::spawn_blocking(move || {
-        app.dialog()
-            .file()
+        tauri::api::dialog::blocking::FileDialogBuilder::new()
             .add_filter("Markdown", &["md"])
             .set_file_name(&defaultName)
-            .blocking_save_file()
+            .save_file()
     })
     .await
     .map_err(|e| format!("打开保存对话框失败: {e}"))?;
@@ -247,9 +257,7 @@ pub async fn export_session_markdown<R: tauri::Runtime>(
     let Some(picked) = picked else {
         return Ok(None);
     };
-    let path = picked
-        .into_path()
-        .map_err(|e| format!("无效的保存路径: {e}"))?;
+    let path = picked;
     crate::config::write_text_file(&path, &content).map_err(|e| e.to_string())?;
     Ok(Some(path.to_string_lossy().into_owned()))
 }

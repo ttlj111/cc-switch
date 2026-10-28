@@ -1,5 +1,5 @@
 use std::str::FromStr;
-use tauri::{Emitter, Manager, State};
+use tauri::{Manager, State};
 
 use crate::app_config::AppType;
 use crate::services::subscription::SubscriptionQuota;
@@ -32,7 +32,7 @@ pub async fn get_subscription_quota(
                 "appType": app_type.as_str(),
                 "data": snapshot,
             });
-            if let Err(e) = app.emit("usage-cache-updated", payload) {
+            if let Err(e) = app.emit_all("usage-cache-updated", payload) {
                 log::error!("emit usage-cache-updated (subscription) 失败: {e}");
             }
             state

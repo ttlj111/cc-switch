@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/tauri";
 
 /** 「我的图标」里的一项，`data` 和供应商 `icon` 里的自定义图标同一种格式 */
 export interface CustomIconEntry {

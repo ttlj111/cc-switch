@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/tauri";
 import { FileText, FolderOpen } from "lucide-react";
 import { memo, useCallback, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";

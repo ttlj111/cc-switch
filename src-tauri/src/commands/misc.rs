@@ -1,5 +1,7 @@
 #![allow(non_snake_case)]
 
+use tauri::Manager;
+
 use crate::app_config::AppType;
 use crate::init_status::{InitErrorPayload, SkillsMigrationPayload};
 use crate::services::ProviderService;
@@ -12,7 +14,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tauri::AppHandle;
 use tauri::State;
-use tauri_plugin_opener::OpenerExt;
 
 #[path = "tool_node_requirement.rs"]
 mod tool_node_requirement;
@@ -50,8 +51,7 @@ fn validate_external_url(raw: &str) -> Result<String, String> {
 pub async fn open_external(app: AppHandle, url: String) -> Result<bool, String> {
     let url = validate_external_url(&url)?;
 
-    app.opener()
-        .open_url(&url, None::<String>)
+    tauri::api::shell::open(&app.shell_scope(), &url, None)
         .map_err(|e| format!("打开链接失败: {e}"))?;
 
     Ok(true)
@@ -75,13 +75,8 @@ pub async fn copy_text_to_clipboard(text: String) -> Result<bool, String> {
 
 /// 检查更新
 #[tauri::command]
-pub async fn check_for_updates(handle: AppHandle) -> Result<bool, String> {
-    handle
-        .opener()
-        .open_url(
-            "https://github.com/farion1231/cc-switch/releases/latest",
-            None::<String>,
-        )
+pub async fn check_for_updates(app: AppHandle) -> Result<bool, String> {
+    tauri::api::shell::open(&app.shell_scope(), "https://github.com/farion1231/cc-switch/releases/latest", None)
         .map_err(|e| format!("打开更新页面失败: {e}"))?;
 
     Ok(true)
@@ -108,14 +103,12 @@ fn portable_zip_url(version: &str, arm64: bool) -> Option<String> {
 /// 不做原地替换自身 exe：那样很容易被杀毒软件当成病毒拦截。
 #[tauri::command]
 pub async fn open_portable_update_download(
-    handle: AppHandle,
+    app: AppHandle,
     version: String,
 ) -> Result<bool, String> {
     let url = portable_zip_url(&version, cfg!(target_arch = "aarch64"))
         .unwrap_or_else(|| "https://github.com/farion1231/cc-switch/releases/latest".to_string());
-    handle
-        .opener()
-        .open_url(url, None::<String>)
+    tauri::api::shell::open(&app.shell_scope(), &url, None)
         .map_err(|e| format!("打开更新页面失败: {e}"))?;
 
     Ok(true)
@@ -6383,17 +6376,11 @@ read -r _
 
 /// 设置窗口主题（Windows/macOS 标题栏颜色）
 /// theme: "dark" | "light" | "system"
+/// Note: Tauri v1 does not support set_theme(); this is a no-op.
 #[tauri::command]
-pub async fn set_window_theme(window: tauri::Window, theme: String) -> Result<(), String> {
-    use tauri::Theme;
-
-    let tauri_theme = match theme.as_str() {
-        "dark" => Some(Theme::Dark),
-        "light" => Some(Theme::Light),
-        _ => None, // system default
-    };
-
-    window.set_theme(tauri_theme).map_err(|e| e.to_string())
+pub async fn set_window_theme(_window: tauri::Window, theme: String) -> Result<(), String> {
+    log::debug!("set_window_theme: theme={theme} (no-op in Tauri v1)");
+    Ok(())
 }
 
 #[cfg(test)]

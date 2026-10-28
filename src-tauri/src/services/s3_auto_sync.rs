@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Manager};
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 
@@ -88,7 +88,7 @@ fn emit_auto_sync_status_updated(app: &AppHandle, status: &str, error: Option<&s
         }),
     };
 
-    if let Err(err) = app.emit("s3-sync-status-updated", payload) {
+    if let Err(err) = app.emit_all("s3-sync-status-updated", payload) {
         log::debug!("[S3] failed to emit sync status update event: {err}");
     }
 }

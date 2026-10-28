@@ -8,7 +8,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "@/lib/toast";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/tauri";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ExternalLink,
@@ -17,7 +17,7 @@ import {
   Plus,
   Search,
 } from "lucide-react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { appWindow } from "@tauri-apps/api/window";
 import type { Provider, VisibleApps } from "@/types";
 import { KNOWN_APP_TYPES, type AppTypeFilter } from "@/types/usage";
 import type { EnvConflict } from "@/types/env";
@@ -560,7 +560,7 @@ function App() {
 
     const syncWindowDecorations = async () => {
       try {
-        await getCurrentWindow().setDecorations(!useAppWindowControls);
+        await appWindow.setDecorations(!useAppWindowControls);
       } catch (error) {
         console.error("[App] Failed to update window decorations", error);
       }
@@ -572,7 +572,7 @@ function App() {
   useEffect(() => {
     if (!isLinux() || !useAppWindowControls) return;
 
-    const win = getCurrentWindow();
+    const win = appWindow;
     let active = true;
     let revision = 0;
     let canResize = false;

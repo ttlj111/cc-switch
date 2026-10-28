@@ -44,7 +44,7 @@ vi.mock("@/lib/platform", async (importOriginal) => ({
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => windowMocks,
+  appWindow: windowMocks,
 }));
 
 vi.mock("sonner", () => ({

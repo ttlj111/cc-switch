@@ -4,6 +4,8 @@
 //! - 支持三应用开关（Claude/Codex/Gemini）
 //! - SSOT 存储在 ~/.cc-switch/skills/
 
+use tauri::Manager;
+
 use crate::app_config::{AppType, InstalledSkill, UnmanagedSkill};
 use crate::error::format_skill_error;
 use crate::services::skill::{
@@ -15,7 +17,6 @@ use crate::store::AppState;
 use std::str::FromStr;
 use std::sync::Arc;
 use tauri::{AppHandle, State};
-use tauri_plugin_opener::OpenerExt;
 
 /// SkillService 状态包装
 pub struct SkillServiceState(pub Arc<SkillService>);
@@ -192,14 +193,12 @@ pub async fn get_cc_switch_skills_dir() -> Result<String, String> {
 
 /// 在系统文件管理器里打开 CC Switch 目录下的 Skills 目录（不存在就先建）
 #[tauri::command]
-pub async fn open_cc_switch_skills_dir(handle: AppHandle) -> Result<bool, String> {
+pub async fn open_cc_switch_skills_dir(app: AppHandle) -> Result<bool, String> {
     let dir = cc_switch_skills_dir();
     if !dir.exists() {
         std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
     }
-    handle
-        .opener()
-        .open_path(dir.to_string_lossy().to_string(), None::<String>)
+    tauri::api::shell::open(&app.shell_scope(), dir.to_string_lossy(), None)
         .map_err(|e| format!("打开文件夹失败: {e}"))?;
     Ok(true)
 }

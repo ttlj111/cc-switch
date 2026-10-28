@@ -1,7 +1,9 @@
+
 use regex::Regex;
+use tauri::Manager;
+
 use std::sync::LazyLock;
 use tauri::AppHandle;
-use tauri_plugin_opener::OpenerExt;
 
 use crate::config::write_text_file;
 use crate::openclaw_config::get_openclaw_dir;
@@ -343,7 +345,7 @@ pub async fn write_workspace_file(filename: String, content: String) -> Result<(
 /// `subdir`: "workspace" opens `~/.openclaw/workspace/`,
 ///           "memory" opens `~/.openclaw/workspace/memory/`.
 #[tauri::command]
-pub async fn open_workspace_directory(handle: AppHandle, subdir: String) -> Result<bool, String> {
+pub async fn open_workspace_directory(app: AppHandle, subdir: String) -> Result<bool, String> {
     let dir = match subdir.as_str() {
         "memory" => get_openclaw_dir().join("workspace").join("memory"),
         _ => get_openclaw_dir().join("workspace"),
@@ -353,9 +355,7 @@ pub async fn open_workspace_directory(handle: AppHandle, subdir: String) -> Resu
         std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create directory: {e}"))?;
     }
 
-    handle
-        .opener()
-        .open_path(dir.to_string_lossy().to_string(), None::<String>)
+    tauri::api::shell::open(&app.shell_scope(), dir.to_string_lossy(), None)
         .map_err(|e| format!("Failed to open directory: {e}"))?;
 
     Ok(true)

@@ -20,7 +20,7 @@ const { invokeMock, copyTextMock } = vi.hoisted(() => ({
   copyTextMock: vi.fn(),
 }));
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
+vi.mock("@tauri-apps/api/tauri", () => ({ invoke: invokeMock }));
 vi.mock("@/lib/clipboard", () => ({ copyText: copyTextMock }));
 
 const COLLAPSED_LENGTH = 1500;

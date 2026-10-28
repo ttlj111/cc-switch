@@ -1,12 +1,13 @@
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
-use tauri_plugin_store::StoreExt;
+use tauri_plugin_store::StoreBuilder;
 
 use crate::error::AppError;
 
 /// Store 中的键名
 const STORE_KEY_APP_CONFIG_DIR: &str = "app_config_dir_override";
+const STORE_FILENAME: &str = "app_paths.json";
 
 /// 缓存当前的 app_config_dir 覆盖路径，避免存储 AppHandle
 static APP_CONFIG_DIR_OVERRIDE: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
@@ -27,13 +28,11 @@ pub fn get_app_config_dir_override() -> Option<PathBuf> {
 }
 
 fn read_override_from_store(app: &tauri::AppHandle) -> Option<PathBuf> {
-    let store = match app.store_builder("app_paths.json").build() {
-        Ok(store) => store,
-        Err(e) => {
-            log::warn!("无法创建 Store: {e}");
-            return None;
-        }
-    };
+    let mut store = StoreBuilder::new(app.clone(), PathBuf::from(STORE_FILENAME)).build();
+
+    if let Err(e) = store.load() {
+        log::warn!("加载 Store 失败: {e}");
+    }
 
     match store.get(STORE_KEY_APP_CONFIG_DIR) {
         Some(Value::String(path_str)) => {
@@ -75,24 +74,25 @@ pub fn set_app_config_dir_to_store(
     app: &tauri::AppHandle,
     path: Option<&str>,
 ) -> Result<(), AppError> {
-    let store = app
-        .store_builder("app_paths.json")
-        .build()
-        .map_err(|e| AppError::Message(format!("创建 Store 失败: {e}")))?;
+    let mut store = StoreBuilder::new(app.clone(), PathBuf::from(STORE_FILENAME)).build();
+
+    if let Err(e) = store.load() {
+        log::warn!("加载 Store 失败: {e}");
+    }
 
     match path {
         Some(p) => {
             let trimmed = p.trim();
             if !trimmed.is_empty() {
-                store.set(STORE_KEY_APP_CONFIG_DIR, Value::String(trimmed.to_string()));
+                let _ = store.insert(STORE_KEY_APP_CONFIG_DIR.to_string(), Value::String(trimmed.to_string()));
                 log::info!("已将 app_config_dir 写入 Store: {trimmed}");
             } else {
-                store.delete(STORE_KEY_APP_CONFIG_DIR);
+                let _ = store.delete(STORE_KEY_APP_CONFIG_DIR);
                 log::info!("已从 Store 中删除 app_config_dir 配置");
             }
         }
         None => {
-            store.delete(STORE_KEY_APP_CONFIG_DIR);
+            let _ = store.delete(STORE_KEY_APP_CONFIG_DIR);
             log::info!("已从 Store 中删除 app_config_dir 配置");
         }
     }

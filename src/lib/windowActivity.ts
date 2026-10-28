@@ -1,5 +1,7 @@
-import { isTauri } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+function isTauri(): boolean {
+  return !!(window as any).__TAURI__;
+}
+import { appWindow } from "@tauri-apps/api/window";
 
 const HEARTBEAT_INTERVAL_MS = 3000;
 const HEARTBEAT_DIM_MS = 300;
@@ -52,7 +54,7 @@ export function initializeWindowActivity() {
   window.addEventListener("blur", () => setWindowActive(false));
 
   if (isTauri()) {
-    void getCurrentWindow()
+    void appWindow
       .onFocusChanged(({ payload }) => setWindowActive(payload))
       .catch((error) => {
         console.error("Failed to observe window focus changes", error);

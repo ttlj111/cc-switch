@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "@/lib/toast";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { appWindow } from "@tauri-apps/api/window";
 import { Maximize2, Minimize2, Minus, X } from "lucide-react";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import { cn } from "@/lib/utils";
@@ -20,7 +20,7 @@ export function WindowControls() {
     let unlisten: (() => void) | undefined;
     const sync = async () => {
       try {
-        const win = getCurrentWindow();
+        const win = appWindow;
         const update = async () => {
           const value = await win.isMaximized();
           if (active) setMaximized(value);
@@ -63,7 +63,7 @@ export function WindowControls() {
           type="button"
           className={BUTTON}
           aria-label={t("header.windowMinimize")}
-          onClick={() => void run(() => getCurrentWindow().minimize())}
+          onClick={() => void run(() => appWindow.minimize())}
         >
           <Minus className="h-4 w-4" />
         </button>
@@ -75,7 +75,7 @@ export function WindowControls() {
           aria-label={maximizeLabel}
           onClick={() =>
             void run(async () => {
-              const win = getCurrentWindow();
+              const win = appWindow;
               await win.toggleMaximize();
               setMaximized(await win.isMaximized());
             })
@@ -93,7 +93,7 @@ export function WindowControls() {
           type="button"
           className={cn(BUTTON, "hover:bg-danger-soft hover:text-danger-text")}
           aria-label={t("header.windowClose")}
-          onClick={() => void run(() => getCurrentWindow().close())}
+          onClick={() => void run(() => appWindow.close())}
         >
           <X className="h-4 w-4" />
         </button>

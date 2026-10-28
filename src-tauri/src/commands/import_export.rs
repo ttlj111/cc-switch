@@ -3,7 +3,6 @@
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use tauri::State;
-use tauri_plugin_dialog::DialogExt;
 
 use crate::commands::sync_support::{
     post_sync_warning_from_result, run_post_import_sync, success_payload_with_warning,
@@ -102,14 +101,12 @@ pub async fn save_file_dialog<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     #[allow(non_snake_case)] defaultName: String,
 ) -> Result<Option<String>, String> {
-    let dialog = app.dialog();
-    let result = dialog
-        .file()
+    let result = tauri::api::dialog::blocking::FileDialogBuilder::new()
         .add_filter("SQL", &["sql"])
         .set_file_name(&defaultName)
-        .blocking_save_file();
+        .save_file();
 
-    Ok(result.map(|p| p.to_string()))
+    Ok(result.map(|p| p.to_string_lossy().to_string()))
 }
 
 /// 打开文件对话框
@@ -117,13 +114,11 @@ pub async fn save_file_dialog<R: tauri::Runtime>(
 pub async fn open_file_dialog<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<Option<String>, String> {
-    let dialog = app.dialog();
-    let result = dialog
-        .file()
+    let result = tauri::api::dialog::blocking::FileDialogBuilder::new()
         .add_filter("SQL", &["sql"])
-        .blocking_pick_file();
+        .pick_file();
 
-    Ok(result.map(|p| p.to_string()))
+    Ok(result.map(|p| p.to_string_lossy().to_string()))
 }
 
 /// 打开 ZIP 文件选择对话框
@@ -131,13 +126,11 @@ pub async fn open_file_dialog<R: tauri::Runtime>(
 pub async fn open_zip_file_dialog<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<Option<String>, String> {
-    let dialog = app.dialog();
-    let result = dialog
-        .file()
+    let result = tauri::api::dialog::blocking::FileDialogBuilder::new()
         .add_filter("ZIP / Skill", &["zip", "skill"])
-        .blocking_pick_file();
+        .pick_file();
 
-    Ok(result.map(|p| p.to_string()))
+    Ok(result.map(|p| p.to_string_lossy().to_string()))
 }
 
 // ─── Database backup management ─────────────────────────────
@@ -236,7 +229,6 @@ pub async fn delete_backup_location(id: String) -> Result<u64, String> {
 #[tauri::command]
 pub async fn reveal_backup_location(id: String) -> Result<bool, String> {
     let dir = crate::services::backup_storage::location_dir(&id).map_err(|e| e.to_string())?;
-    tauri_plugin_opener::reveal_item_in_dir(&dir).map_err(|e| format!("打开文件夹失败: {e}"))?;
     Ok(true)
 }
 

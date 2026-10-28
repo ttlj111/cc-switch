@@ -14,13 +14,9 @@ use std::sync::{Mutex, OnceLock};
 
 use once_cell::sync::Lazy;
 use serde::Serialize;
-use tauri::image::Image;
-use tauri::menu::{
-    CheckMenuItem, Menu, MenuBuilder, MenuItem, MenuItemKind, Submenu, SubmenuBuilder,
+use tauri::{
+    CustomMenuItem, Icon, Manager, SystemTrayMenu, SystemTraySubmenu,
 };
-use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconEvent};
-use tauri::{Emitter, Manager};
-use tauri_plugin_opener::OpenerExt;
 
 use crate::app_config::AppType;
 use crate::error::AppError;
@@ -73,7 +69,7 @@ const WARN_BELOW_PERCENT: f64 = 20.0;
 
 /// 每个应用行的子菜单句柄，额度更新时就地改标题而不是整菜单重建（整建会关掉 macOS 上
 /// 正开着的菜单）。`create_tray_menu` 每次重建都整表覆盖写入。
-static TRAY_SECTION_SUBMENUS: Lazy<Mutex<HashMap<AppType, Submenu<tauri::Wry>>>> =
+static TRAY_SECTION_SUBMENUS: Lazy<Mutex<HashMap<AppType, SystemTraySubmenu>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 // ─── 文案 ────────────────────────────────────────────────────────────────────
@@ -2331,83 +2327,79 @@ pub(crate) fn collect_panel_model(app_state: &AppState) -> Result<PanelModel, Ap
 
 // ─── 模型 → Tauri 菜单 ─────────────────────────────────────────────────────────
 
+/// v1 tray menu error helper (kept for future use).
+#[allow(dead_code)]
 fn menu_error(e: impl std::fmt::Display) -> AppError {
     AppError::Message(format!("创建托盘菜单失败: {e}"))
 }
 
+/// v1 tray menu uses SystemTrayMenu / CustomMenuItem / SystemTraySubmenu.
+/// Returns the updated menu (items are added in-place).
 fn attach_entry(
-    app: &tauri::AppHandle,
+    menu: SystemTrayMenu,
     entry: &TrayEntry,
-    handles: &mut HashMap<AppType, Submenu<tauri::Wry>>,
-) -> Result<Option<MenuItemKind<tauri::Wry>>, AppError> {
-    Ok(Some(match entry {
-        TrayEntry::Separator => return Ok(None),
-        TrayEntry::Item { id, text, enabled } => MenuItemKind::MenuItem(
-            MenuItem::with_id(app, id.as_str(), text, *enabled, None::<&str>)
-                .map_err(menu_error)?,
-        ),
+    handles: &mut HashMap<AppType, SystemTraySubmenu>,
+) -> Result<SystemTrayMenu, AppError> {
+    Ok(match entry {
+        TrayEntry::Separator => menu.add_native_item(tauri::SystemTrayMenuItem::Separator),
+        TrayEntry::Item { id, text, enabled } => {
+            let item = CustomMenuItem::new(id.as_str(), text);
+            let item = if !*enabled { item.disabled() } else { item };
+            menu.add_item(item)
+        }
         TrayEntry::Check {
             id,
             text,
             enabled,
             checked,
-        } => MenuItemKind::Check(
-            CheckMenuItem::with_id(app, id.as_str(), text, *enabled, *checked, None::<&str>)
-                .map_err(menu_error)?,
-        ),
+        } => {
+            let item = CustomMenuItem::new(id.as_str(), text);
+            let item = if *checked { item.selected() } else { item };
+            let item = if !*enabled { item.disabled() } else { item };
+            menu.add_item(item)
+        }
         TrayEntry::Submenu {
-            id,
+            id: _,
             text,
             app: app_type,
             children,
         } => {
-            let mut builder = SubmenuBuilder::with_id(app, id.as_str(), text);
+            let mut sub = SystemTrayMenu::new();
             for child in children {
-                builder = match attach_entry(app, child, handles)? {
-                    Some(item) => builder.item(&item),
-                    None => builder.separator(),
-                };
+                sub = attach_entry(sub, child, handles)?;
             }
-            let submenu = builder.build().map_err(menu_error)?;
+            let submenu = SystemTraySubmenu::new(text, sub);
             if let Some(app_type) = app_type {
                 handles.insert(app_type.clone(), submenu.clone());
             }
-            MenuItemKind::Submenu(submenu)
+            menu.add_submenu(submenu)
         }
-    }))
+    })
 }
 
 /// 创建动态托盘菜单
 pub fn create_tray_menu(
     app: &tauri::AppHandle,
     app_state: &AppState,
-) -> Result<Menu<tauri::Wry>, AppError> {
+) -> Result<SystemTrayMenu, AppError> {
     let texts = TrayTexts::current();
     let model = collect_model(app_state, &texts)?;
 
     let mut handles = HashMap::new();
-    let mut builder = MenuBuilder::new(app);
+    let mut menu = SystemTrayMenu::new();
     // Linux 点图标只能出原生菜单，最上面放一项打开托盘面板。
     #[cfg(target_os = "linux")]
     {
         let texts = crate::tray_panel::PanelTexts::current();
-        let item = MenuItem::with_id(
-            app,
+        let item = CustomMenuItem::new(
             crate::tray_panel::OPEN_PANEL_ID,
             texts.open_panel,
-            true,
-            None::<&str>,
-        )
-        .map_err(menu_error)?;
-        builder = builder.item(&item).separator();
+        );
+        menu = menu.add_item(item).add_native_item(tauri::SystemTrayMenuItem::Separator);
     }
     for entry in &model.entries {
-        builder = match attach_entry(app, entry, &mut handles)? {
-            Some(item) => builder.item(&item),
-            None => builder.separator(),
-        };
+        menu = attach_entry(menu, entry, &mut handles)?;
     }
-    let menu = builder.build().map_err(menu_error)?;
     #[cfg(target_os = "windows")]
     crate::tray_compat::remember_native_menu(&menu);
 
@@ -2438,27 +2430,21 @@ const DOT_RING_RADIUS: f32 = 0.21;
 
 /// 托盘平时的图标和它是不是 macOS 模板图：macOS 用单色模板图（跟随菜单栏深浅色），读不到时
 /// 和其它平台一样用应用图标。读一次缓存起来，出问题 / 恢复时在它上面加减圆点。
-pub fn base_tray_icon(app: &tauri::AppHandle) -> Option<(Image<'static>, bool)> {
-    static BASE: OnceLock<Option<(Image<'static>, bool)>> = OnceLock::new();
+pub fn base_tray_icon(app: &tauri::AppHandle) -> Option<(Icon, bool)> {
+    static BASE: OnceLock<Option<(Icon, bool)>> = OnceLock::new();
     BASE.get_or_init(|| {
         #[cfg(target_os = "macos")]
         {
             const ICON_BYTES: &[u8] =
                 include_bytes!("../icons/tray/macos/statusbar_template_3x.png");
-            match Image::from_bytes(ICON_BYTES) {
-                Ok(icon) => return Some((icon, true)),
-                Err(err) => {
-                    log::warn!("Failed to load macOS tray icon: {err}");
-                    log::warn!("Falling back to default window icon for tray");
-                }
-            }
+            // v1: use Icon::Raw for PNG bytes (needs icon-png feature)
+            return Some((Icon::Raw(ICON_BYTES.to_vec()), true));
         }
-        match app.default_window_icon() {
-            Some(icon) => Some((icon.clone().to_owned(), false)),
-            None => {
-                log::warn!("Failed to get default window icon for tray");
-                None
-            }
+        #[cfg(not(target_os = "macos"))]
+        {
+            // v1: load icon from include_bytes instead of default_window_icon
+            const ICON_BYTES: &[u8] = include_bytes!("../icons/icon.png");
+            Some((Icon::Raw(ICON_BYTES.to_vec()), false))
         }
     })
     .clone()
@@ -2466,11 +2452,21 @@ pub fn base_tray_icon(app: &tauri::AppHandle) -> Option<(Image<'static>, bool)> 
 
 /// 出问题时的图标：右下角一个实心圆点，圆点外挖一圈透明边和图形隔开。模板图只看不透明度，
 /// 圆点画成黑色、由系统按菜单栏深浅色着色（单色，靠形状区分）；彩色图画橙点。
-fn icon_with_problem_dot(icon: &Image<'_>, template: bool) -> Image<'static> {
-    let (width, height) = (icon.width(), icon.height());
-    let mut rgba = icon.rgba().to_vec();
+/// v1 icon pixel manipulation: extract RGBA from Icon::Rgba, modify, return new Icon.
+fn icon_rgba(icon: &Icon) -> Option<(Vec<u8>, u32, u32)> {
+    match icon {
+        Icon::Rgba { rgba, width, height } => Some((rgba.clone(), *width, *height)),
+        _ => None,
+    }
+}
+
+fn icon_with_problem_dot(icon: &Icon, template: bool) -> Icon {
+    let Some((rgba, width, height)) = icon_rgba(icon) else {
+        return icon.clone();
+    };
+    let mut rgba = rgba;
     if width == 0 || height == 0 || rgba.len() != (width as usize) * (height as usize) * 4 {
-        return Image::new_owned(rgba, width, height);
+        return Icon::Rgba { rgba, width, height };
     }
     let size = width.min(height) as f32;
     let dot_radius = size * DOT_RADIUS;
@@ -2493,13 +2489,15 @@ fn icon_with_problem_dot(icon: &Image<'_>, template: bool) -> Image<'static> {
             if fill > 0.0 {
                 // 圆点（含边缘）整个落在透明圈里，底下原本的像素已经挖掉了。
                 rgba[i..i + 3].copy_from_slice(&color);
-                rgba[i + 3] = (255.0 * fill).round() as u8;
+                let f = (255.0f32 * fill).round();
+                rgba[i + 3] = f as u8;
             } else {
-                rgba[i + 3] = (f32::from(rgba[i + 3]) * (1.0 - cut)).round() as u8;
+                let f = (f32::from(rgba[i + 3]) * (1.0 - cut)).round();
+                rgba[i + 3] = f as u8;
             }
         }
     }
-    Image::new_owned(rgba, width, height)
+    Icon::Rgba { rgba, width, height }
 }
 
 /// 悬停提示：平时 `CC Switch`，出问题时 `CC Switch · 需要处理：<问题区第一条>`。额度不算问题。
@@ -2523,7 +2521,7 @@ static APPLIED_INDICATOR: Lazy<Mutex<Option<(bool, String)>>> = Lazy::new(|| Mut
 /// 变了时才动（Linux 每次换图标都要写临时文件）。
 fn update_problem_indicator(app: &tauri::AppHandle, texts: &TrayTexts, problems: &[TrayProblem]) {
     // 启动时第一次建菜单那会儿托盘图标还没建，等下一次重建。
-    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+    let Some(tray) = app.tray_handle_by_id(TRAY_ID) else {
         return;
     };
     let has_dot = !problems.is_empty();
@@ -2545,19 +2543,18 @@ fn update_problem_indicator(app: &tauri::AppHandle, texts: &TrayTexts, problems:
             } else {
                 base
             };
-            if let Err(e) = tray.set_icon(Some(icon)) {
+            if let Err(e) = tray.set_icon(icon) {
                 log::warn!("[Tray] 更新托盘图标失败: {e}");
             }
             // macOS 上 set_icon 会把模板标记清掉，要再设一次，否则深色菜单栏里是黑图标。
+            // v1: SystemTrayHandle doesn't have set_icon_as_template; skip for now.
             if template {
-                if let Err(e) = tray.set_icon_as_template(true) {
-                    log::warn!("[Tray] 恢复模板图标标记失败: {e}");
-                }
+                log::debug!("[Tray] set_icon_as_template not available in Tauri v1");
             }
         }
     }
     // Linux（AppIndicator）不显示悬停提示，设了也无害。
-    if let Err(e) = tray.set_tooltip(Some(&tooltip)) {
+    if let Err(e) = tray.set_tooltip(&tooltip) {
         log::warn!("[Tray] 更新托盘悬停提示失败: {e}");
     }
 }
@@ -2605,8 +2602,8 @@ pub fn refresh_tray_menu(app: &tauri::AppHandle) {
         if crate::tray_panel::uses_native_menu() {
             match create_tray_menu(app, state.inner()) {
                 Ok(new_menu) => {
-                    if let Some(tray) = app.tray_by_id(TRAY_ID) {
-                        if let Err(e) = tray.set_menu(Some(new_menu)) {
+                    if let Some(tray) = app.tray_handle_by_id(TRAY_ID) {
+                        if let Err(e) = tray.set_menu(new_menu) {
                             log::error!("刷新托盘菜单失败: {e}");
                         }
                     }
@@ -2624,68 +2621,94 @@ pub fn refresh_tray_menu(app: &tauri::AppHandle) {
 /// 换成原生菜单时挂上重建的菜单、收起面板；换成面板时摘掉菜单（`refresh_tray_menu` 只更新图标状态）。
 pub fn apply_tray_style(app: &tauri::AppHandle) {
     let native = crate::tray_panel::uses_native_menu();
-    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+    if let Some(tray) = app.tray_handle_by_id(TRAY_ID) {
         if native {
             crate::tray_panel::hide_panel(app);
         } else {
-            if let Err(e) = tray.set_menu(None::<Menu<tauri::Wry>>) {
+            // v1 set_menu requires a SystemTrayMenu; set an empty menu to "remove" it
+            if let Err(e) = tray.set_menu(SystemTrayMenu::new()) {
                 log::error!("摘掉托盘菜单失败: {e}");
             }
             // 菜单没了，旧句柄不再更新标题。
             lock(&TRAY_SECTION_SUBMENUS).clear();
         }
-        if let Err(e) = tray.set_show_menu_on_left_click(native_menu_on_left_click(native)) {
-            log::warn!("设置托盘左键行为失败: {e}");
-        }
+        // v1 has no set_show_menu_on_left_click; use Builder-level with_menu_on_left_click
     }
     refresh_tray_menu(app);
 }
 
-/// 托盘图标的鼠标事件。Windows 第三方托盘下 `tray_compat` 补发的点击也走这里。
-pub fn handle_tray_icon_event(tray: &TrayIcon, event: TrayIconEvent) {
-    if let TrayIconEvent::Click {
-        button: button @ (MouseButton::Left | MouseButton::Right),
-        button_state: MouseButtonState::Up,
-        rect,
-        ..
-    } = &event
-    {
-        if cfg!(target_os = "windows") && *button == MouseButton::Left {
-            crate::tray_panel::hide_panel(tray.app_handle());
-            show_main_window(tray.app_handle());
-        } else if !crate::tray_panel::uses_native_menu() {
-            crate::tray_panel::toggle(tray.app_handle(), rect);
-            return;
-        } else {
-            // 弹出的菜单里已经有反馈行了：算显示过，下次悬停重建时拿掉。
-            mark_feedback_seen();
-        }
-    }
+/// 托盘事件处理：v1 使用 SystemTrayEvent，在 Builder.on_event 闭包里调用。
+/// `handle_system_tray_event` 是 lib.rs 中的入口，匹配 SystemTrayEvent::MenuItemClick 和点击事件。
+pub fn handle_system_tray_event(app: &tauri::AppHandle, event: tauri::SystemTrayEvent) {
     match &event {
-        // 鼠标悬停/点击到托盘图标时，后台异步刷新用量缓存，
-        // 让用户下一次（或快速打开菜单的那一刻）看到较新的数字。
-        // refresh_all_usage_in_tray 内部有 10 秒防抖。
-        TrayIconEvent::Enter { .. } | TrayIconEvent::Click { .. } => {
-            let app = tray.app_handle().clone();
-            // 悬停时菜单还没打开：问题区该出现 / 消失了就趁这时重建。
-            if matches!(event, TrayIconEvent::Enter { .. }) {
-                refresh_tray_if_problems_changed(&app);
+        tauri::SystemTrayEvent::MenuItemClick { id, .. } => {
+            handle_tray_menu_event(app, id.as_str());
+        }
+        tauri::SystemTrayEvent::LeftClick { position, size, .. } => {
+            if cfg!(target_os = "windows") {
+                crate::tray_panel::hide_panel(app);
+                show_main_window(app);
+            } else if !crate::tray_panel::uses_native_menu() {
+                // v1 LeftClick provides position & size (PhysicalPosition<f64>, PhysicalSize<f64>)
+                let rect = crate::tray_panel::TrayRect {
+                    x: position.x,
+                    y: position.y,
+                    width: size.width,
+                    height: size.height,
+                };
+                crate::tray_panel::toggle(app, &rect);
+                return;
+            } else {
+                mark_feedback_seen();
             }
+            // 刷新用量缓存
+            let app = app.clone();
             tauri::async_runtime::spawn(async move {
                 refresh_all_usage_in_tray(&app).await;
             });
         }
-        _ => log::debug!("unhandled event {event:?}"),
+        tauri::SystemTrayEvent::RightClick { position, size, .. } => {
+            if !crate::tray_panel::uses_native_menu() {
+                // v1 RightClick also provides position & size
+                let rect = crate::tray_panel::TrayRect {
+                    x: position.x,
+                    y: position.y,
+                    width: size.width,
+                    height: size.height,
+                };
+                crate::tray_panel::toggle(app, &rect);
+                return;
+            } else {
+                mark_feedback_seen();
+            }
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                refresh_all_usage_in_tray(&app).await;
+            });
+        }
+        _ => {}
     }
 }
 
+/// 原有 handle_tray_icon_event 的保留接口（兼容旧调用者）
+/// v2: handle_tray_icon_event(tray: &TrayIcon, event: TrayIconEvent)
+/// v1: handle_system_tray_event(app: &AppHandle, event: SystemTrayEvent)
+#[allow(dead_code)]
+pub fn handle_tray_icon_event(_tray: &tauri::SystemTrayHandle, _event: tauri::SystemTrayEvent) {
+    // This function is no longer used in v1; see handle_system_tray_event above.
+}
+
 /// 左键是否直接出原生菜单：用面板时不出；Windows 的习惯是左键打开主界面、右键出菜单。
+/// v1 的 SystemTray 不支持 set_show_menu_on_left_click，此函数仅作逻辑参考。
+#[allow(dead_code)]
 pub fn native_menu_on_left_click(native: bool) -> bool {
     native && cfg!(not(target_os = "windows"))
 }
 
 /// 悬停到托盘图标时：问题区该出现 / 该消失了（路由服务停了、又起来了）、反馈行显示过了或到点了，
 /// 就重建菜单。只在变了时重建，菜单还没打开，不会被关掉。
+/// v1 没有 TrayIconEvent::Move 事件，此函数暂无调用方；保留供后续定时刷新使用。
+#[allow(dead_code)]
 pub fn refresh_tray_if_problems_changed(app: &tauri::AppHandle) {
     static LAST_CHECK: Mutex<Option<std::time::Instant>> = Mutex::new(None);
     {
@@ -2805,7 +2828,7 @@ fn navigate(app: &tauri::AppHandle, navigation: TrayNavigation) {
     }
     show_main_window(app);
     if pending {
-        if let Err(e) = app.emit("tray-navigate", ()) {
+        if let Err(e) = app.emit_all("tray-navigate", ()) {
             log::error!("发射 tray-navigate 事件失败: {e}");
         }
     }
@@ -2814,7 +2837,7 @@ fn navigate(app: &tauri::AppHandle, navigation: TrayNavigation) {
 
 /// 显示并聚焦主窗口；轻量模式下重建窗口。
 pub fn show_main_window(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_window("main") {
         #[cfg(target_os = "windows")]
         {
             let _ = window.set_skip_taskbar(false);
@@ -2858,7 +2881,7 @@ pub fn handle_profile_tray_event(app: &tauri::AppHandle, event_id: &str) -> bool
             }
         }
         // 通知主窗口刷新（profileId=null 表示该分组已清除当前项目）
-        if let Err(e) = app.emit(
+        if let Err(e) = app.emit_all(
             "profile-applied",
             serde_json::json!({ "profileId": null, "scope": scope.as_str() }),
         ) {
@@ -3040,10 +3063,10 @@ fn emit_switched(app: &tauri::AppHandle, app_type: &AppType, provider_id: &str) 
         "autoFailoverEnabled": auto_failover,
         "providerId": provider_id
     });
-    if let Err(e) = app.emit("proxy-flags-changed", event_data.clone()) {
+    if let Err(e) = app.emit_all("proxy-flags-changed", event_data.clone()) {
         log::error!("发射 proxy-flags-changed 事件失败: {e}");
     }
-    if let Err(e) = app.emit("provider-switched", event_data) {
+    if let Err(e) = app.emit_all("provider-switched", event_data) {
         log::error!("发射 provider-switched 事件失败: {e}");
     }
 }
@@ -3074,7 +3097,7 @@ pub fn handle_tray_menu_event(app: &tauri::AppHandle, event_id: &str) {
     match event_id {
         "show_main" => show_main_window(app),
         "open_website" => {
-            if let Err(e) = app.opener().open_url("https://ccswitch.io", None::<String>) {
+            if let Err(e) = tauri::api::shell::open(&app.shell_scope(), "https://ccswitch.io", None) {
                 log::error!("打开官方网站失败: {e}");
             }
         }

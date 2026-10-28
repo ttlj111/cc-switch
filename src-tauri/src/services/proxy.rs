@@ -2,6 +2,8 @@
 //!
 //! 提供代理服务器的启动、停止和配置管理
 
+use tauri::Manager;
+
 use crate::app_config::AppType;
 use crate::config::{get_claude_settings_path, read_json_file};
 use crate::database::Database;
@@ -11,7 +13,6 @@ use crate::proxy::switch_lock::SwitchLockManager;
 use crate::proxy::types::*;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tauri::Emitter;
 use tokio::sync::RwLock;
 
 use crate::live::project::claude::PROXY_TOKEN_PLACEHOLDER;
@@ -213,7 +214,7 @@ impl ProxyService {
 
     pub(crate) async fn emit(&self, event: &str, payload: Value) {
         if let Some(handle) = self.app_handle.read().await.as_ref() {
-            if let Err(error) = handle.emit(event, payload) {
+            if let Err(error) = handle.emit_all(event, payload) {
                 log::warn!("发送事件 {event} 失败: {error}");
             }
         }

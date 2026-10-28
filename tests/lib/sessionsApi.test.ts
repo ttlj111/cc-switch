@@ -1,40 +1,70 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ContentRef, ImageRef, TranscriptChunk } from "@/types";
 
-const core = vi.hoisted(() => {
-  class Channel<T> {
-    onmessage: (message: T) => void = () => {};
-  }
-  return { invoke: vi.fn(), Channel };
-});
+const core = vi.hoisted(() => ({
+  invoke: vi.fn(),
+}));
 
-vi.mock("@tauri-apps/api/core", () => core);
+// v1 uses events instead of Channel — mock listen as well
+const eventApi = vi.hoisted(() => ({
+  listen: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/api/tauri", () => core);
+vi.mock("@tauri-apps/api/event", () => eventApi);
 
 import { sessionsApi } from "@/lib/api/sessions";
 
 describe("sessionsApi · 阅读页命令（P2 契约）", () => {
   beforeEach(() => {
     core.invoke.mockReset();
+    eventApi.listen.mockReset();
   });
 
-  it("streamMessages：传 onChunk Channel，chunk 回调给调用方", async () => {
+  it("streamMessages：监听 session-stream-chunk 事件，chunk 回调给调用方", async () => {
     const chunks: TranscriptChunk[] = [];
-    core.invoke.mockImplementation(
-      async (
-        _command: string,
-        args: { onChunk: InstanceType<typeof core.Channel> },
-      ) => {
-        args.onChunk.onmessage({ type: "done", payloadBytes: 3 });
+
+    // listen returns an unlisten function; capture the handler so we can
+    // emit a matching event after streamMessages registers it.
+    let capturedHandler: ((event: any) => void) | undefined;
+
+    eventApi.listen.mockImplementation(
+      async (_event: string, handler: (event: any) => void) => {
+        capturedHandler = handler;
+        return vi.fn(); // unlisten
       },
     );
+
+    // When invoke is called, capture the requestId and simulate the backend
+    // pushing a chunk event through the captured listener
+    core.invoke.mockImplementation(async (_cmd: string, args: any) => {
+      // Simulate backend emitting a chunk event
+      if (capturedHandler) {
+        capturedHandler({
+          payload: {
+            requestId: args.requestId,
+            chunk: { type: "done", payloadBytes: 3 },
+          },
+        });
+      }
+    });
+
     await sessionsApi.streamMessages("claude", "/a.jsonl", (chunk) =>
       chunks.push(chunk),
     );
-    expect(core.invoke).toHaveBeenCalledWith("stream_session_messages", {
-      providerId: "claude",
-      sourcePath: "/a.jsonl",
-      onChunk: expect.any(core.Channel),
-    });
+
+    expect(core.invoke).toHaveBeenCalledWith(
+      "stream_session_messages",
+      expect.objectContaining({
+        providerId: "claude",
+        sourcePath: "/a.jsonl",
+        requestId: expect.any(String),
+      }),
+    );
+    expect(eventApi.listen).toHaveBeenCalledWith(
+      "session-stream-chunk",
+      expect.any(Function),
+    );
     expect(chunks).toEqual([{ type: "done", payloadBytes: 3 }]);
   });
 
