@@ -210,9 +210,8 @@ pub async fn open_skill_dir(handle: AppHandle, directory: String) -> Result<bool
     if !dir.is_dir() {
         return Err(format!("目录不存在: {}", dir.display()));
     }
-    handle
-        .opener()
-        .open_path(dir.to_string_lossy().to_string(), None::<String>)
+    // v1: no opener plugin, use tauri::api::shell::open
+    tauri::api::shell::open(&handle.shell_scope(), dir.to_string_lossy(), None)
         .map_err(|e| format!("打开文件夹失败: {e}"))?;
     Ok(true)
 }

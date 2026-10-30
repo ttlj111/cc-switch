@@ -128,6 +128,9 @@ opt-level = "s"
 panic = "unwind"
 strip = "symbols"
 
+[patch.crates-io]
+tao = { path = "../patches/tao-0.16.11" }
+
 [dev-dependencies]
 serial_test = "3"
 tempfile = "3"

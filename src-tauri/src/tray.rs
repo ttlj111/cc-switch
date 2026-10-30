@@ -2431,7 +2431,7 @@ const DOT_RING_RADIUS: f32 = 0.21;
 
 /// 托盘平时的图标和它是不是 macOS 模板图：macOS 用单色模板图（跟随菜单栏深浅色），读不到时
 /// 和其它平台一样用应用图标。读一次缓存起来，出问题 / 恢复时在它上面加减圆点。
-pub fn base_tray_icon(app: &tauri::AppHandle) -> Option<(Icon, bool)> {
+pub fn base_tray_icon(_app: &tauri::AppHandle) -> Option<(Icon, bool)> {
     static BASE: OnceLock<Option<(Icon, bool)>> = OnceLock::new();
     BASE.get_or_init(|| {
         #[cfg(target_os = "macos")]
@@ -2441,9 +2441,16 @@ pub fn base_tray_icon(app: &tauri::AppHandle) -> Option<(Icon, bool)> {
             // v1: use Icon::Raw for PNG bytes (needs icon-png feature)
             return Some((Icon::Raw(ICON_BYTES.to_vec()), true));
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         {
-            // v1: load icon from include_bytes instead of default_window_icon
+            // Linux AppIndicator writes the icon to a temp PNG file via gdk_pixbuf.
+            // A 512×512 source can cause rowstride mismatches or rendering glitches;
+            // use a 48×48 tray-specific icon for reliable AppIndicator display.
+            const ICON_BYTES: &[u8] = include_bytes!("../icons/tray-linux-48.png");
+            Some((Icon::Raw(ICON_BYTES.to_vec()), false))
+        }
+        #[cfg(target_os = "windows")]
+        {
             const ICON_BYTES: &[u8] = include_bytes!("../icons/icon.png");
             Some((Icon::Raw(ICON_BYTES.to_vec()), false))
         }

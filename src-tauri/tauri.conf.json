@@ -97,8 +97,8 @@
       ]
     },
     "systemTray": {
-      "iconPath": "icons/icon.png",
-      "iconAsTemplate": true
+      "iconPath": "icons/tray-linux-48.png",
+      "iconAsTemplate": false
     }
   }
 }
